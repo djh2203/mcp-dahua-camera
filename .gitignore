@@ -1,0 +1,19 @@
+# 本地真实配置(摄像头凭据), 不入库
+config.ini
+
+# 抓图/录音产物
+media/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+dist/
+build/
+*.egg-info/
+uv.lock
+
+# 编辑器
+.DS_Store
+.idea/
+.vscode/
