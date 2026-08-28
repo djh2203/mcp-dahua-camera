@@ -293,6 +293,43 @@ class Camera:
         ctypes.memmove(ctypes.addressof(loc), buf, ctypes.sizeof(loc))
         return loc.nPTZPan / 10.0, loc.nPTZTilt / 10.0
 
+    # ---------- 设备信息 ----------
+    def get_device_version(self):
+        """查询设备软件版本/型号信息. 返回 dict"""
+        from NetSDK.SDK_Enum import EM_QUERY_DEV_STATE_TYPE
+        from NetSDK.SDK_Struct import NET_A_DEV_VERSION_INFO
+
+        info = NET_A_DEV_VERSION_INFO()
+        buf = ctypes.create_string_buffer(ctypes.sizeof(info), ctypes.sizeof(info))
+        ret = self.sdk.QueryDevState(self.loginID, EM_QUERY_DEV_STATE_TYPE.SOFTWARE, buf, ctypes.sizeof(info), 0, 2000)
+        if not ret:
+            raise CameraError(f"查询设备信息失败: {self.sdk.GetLastErrorMessage()}")
+        ctypes.memmove(ctypes.addressof(info), buf, ctypes.sizeof(info))
+        return {
+            "serial": info.szDevSerialNo.decode(errors="ignore").rstrip("\x00"),
+            "device_type_id": info.byDevType,
+            "device_type": info.szDevType.decode(errors="ignore").rstrip("\x00"),
+            "detail_type": info.szDetailType.decode(errors="ignore").rstrip("\x00"),
+            "software_version": info.szSoftWareVersion.decode(errors="ignore").rstrip("\x00"),
+            "hardware_version": info.szHardwareVersion.decode(errors="ignore").rstrip("\x00"),
+            "web_version": info.szWebVersion.decode(errors="ignore").rstrip("\x00"),
+        }
+
+    def get_ptz_capabilities(self):
+        """查询云台预置点列表. 返回 list[int] (已占用的预置点序号)"""
+        from NetSDK.SDK_Enum import EM_QUERY_DEV_STATE_TYPE
+        from NetSDK.SDK_Struct import NET_PTZ_PRESET_LIST
+
+        preset_list = NET_PTZ_PRESET_LIST()
+        preset_list.nChannelID = self.channel
+        buf = ctypes.create_string_buffer(ctypes.sizeof(preset_list), ctypes.sizeof(preset_list))
+        ctypes.memmove(buf, ctypes.addressof(preset_list), ctypes.sizeof(preset_list))
+        ret = self.sdk.QueryDevState(self.loginID, EM_QUERY_DEV_STATE_TYPE.PTZ_PRESET_LIST, buf, ctypes.sizeof(preset_list), 0, 2000)
+        if not ret:
+            return []
+        ctypes.memmove(ctypes.addressof(preset_list), buf, ctypes.sizeof(preset_list))
+        return [preset_list.stPresetNo[i] for i in range(preset_list.nPresetNum)]
+
     # ---------- 抓图 ----------
     def capture(self, timeout=8):
         """抓取一帧 JPEG, 返回 bytes"""

@@ -73,12 +73,33 @@ def t_camera_info(args):
     dev = cam.device_info
     if not dev:
         return _fail("未登录")
-    return _ok(
-        ip=cam.ip,
-        channel_num=dev.nChanNum,
-        serial=dev.sSerialNumber.decode(errors="ignore"),
-        device_type=dev.nDVRType,
-    )
+
+    info = {
+        "ok": True,
+        "ip": cam.ip,
+        "channel_num": dev.nChanNum,
+        "serial": dev.sSerialNumber.decode(errors="ignore"),
+        "device_type": dev.nDVRType,
+    }
+
+    try:
+        ver = cam.get_device_version()
+        info.update({
+            "model": ver["detail_type"] or ver["device_type"],
+            "software_version": ver["software_version"],
+            "hardware_version": ver["hardware_version"],
+        })
+    except Exception:
+        pass
+
+    try:
+        presets = cam.get_ptz_capabilities()
+        info["ptz_preset_used"] = presets
+        info["ptz_max_preset"] = max(presets) if presets else 0
+    except Exception:
+        pass
+
+    return info
 
 
 def t_ptz_move(args):
