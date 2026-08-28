@@ -8,8 +8,13 @@
 
 | 工具 | 说明 |
 |------|------|
+| **设备管理** | |
+| `search_devices` | 局域网搜索摄像头(返回 IP/型号/序列号等) |
+| `select_camera` | 选择要控制的摄像头(需提供 IP 和凭据) |
+| `list_cameras` | 列出已发现/已连接的摄像头 |
+| **设备控制** | |
 | `camera_status` | 摄像头在线状态 |
-| `camera_info` | 设备信息(型号/序列号/通道数/类型/软件版本/硬件版本/预置点) |
+| `camera_info` | 设备信息(型号/序列号/版本/智能跟踪等) |
 | `ptz_move` | 云台方向移动(上下左右/对角), speed 1-255, seconds 移动时长 |
 | `ptz_stop` | 停止云台移动 |
 | `ptz_abs_move` | 绝对定位(水平角 pan_deg) |
@@ -25,11 +30,11 @@
 
 ```bash
 uv sync
-cp config.example.ini config.ini   # 填入摄像头 ip/账号密码
-uv run mcp-dahua-camera            # 启动 MCP server (stdio)
+cp config.example.ini config.ini   # 填入默认凭据(端口/用户名/密码)
+uv run python -m mcp_server        # 启动 MCP server (stdio)
 ```
 
-配置也可用环境变量覆盖: `CAM_IP` / `CAM_PORT` / `CAM_USER` / `CAM_PASS` / `CAM_CHANNEL`
+配置也可用环境变量覆盖: `CAM_PORT` / `CAM_USER` / `CAM_PASS` / `CAM_CHANNEL`
 
 ## 作为 MCP client 接入
 
@@ -49,8 +54,8 @@ uv run mcp-dahua-camera            # 启动 MCP server (stdio)
 ## 目录
 
 ```
-camera.py        # 摄像头 SDK 封装(NetSDK)
-mcp_server.py    # MCP server (10 个工具)
+camera.py        # 摄像头 SDK 封装(NetSDK) + 设备搜索
+mcp_server.py    # MCP server (13 个工具)
 config.py        # 配置加载(支持环境变量覆盖)
 scripts/         # 设备调试脚本(搜设备/测云台/测麦克风/查能力)
 vendor/          # NetSDK wheel
