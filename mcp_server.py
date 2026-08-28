@@ -99,6 +99,16 @@ def t_camera_info(args):
     except Exception:
         pass
 
+    try:
+        track = cam.get_smart_track()
+        info["smart_track_supported"] = track["supported"]
+        info["smart_track_enabled"] = track["enabled"]
+        info["motion_detect_enabled"] = track.get("motion_detect_enabled", False)
+        info["tracking_zoom"] = track.get("tracking_zoom", False)
+    except Exception:
+        info["smart_track_supported"] = False
+        info["smart_track_enabled"] = False
+
     return info
 
 

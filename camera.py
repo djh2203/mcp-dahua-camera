@@ -330,6 +330,32 @@ class Camera:
         ctypes.memmove(ctypes.addressof(preset_list), buf, ctypes.sizeof(preset_list))
         return [preset_list.stPresetNo[i] for i in range(preset_list.nPresetNum)]
 
+    def get_smart_track(self):
+        """查询智能跟踪配置. 返回 dict(supported: bool, enabled: bool)"""
+        from NetSDK.SDK_Struct import NET_CFG_SMART_MOTION_DETECT
+
+        # 先获取原始配置
+        buf_size = 1024 * 1024  # 1MB buffer
+        raw_buf = ctypes.create_string_buffer(buf_size)
+        error = ctypes.c_int(0)
+        ret = self.sdk.GetNewDevConfig(self.loginID, "SmartMotionDetect", self.channel, raw_buf, buf_size, error, 3000)
+        if not ret:
+            return {"supported": False, "enabled": False}
+
+        # 解析到结构体
+        cfg = NET_CFG_SMART_MOTION_DETECT()
+        cfg.dwSize = ctypes.sizeof(cfg)
+        ret = self.sdk.ParseData("SmartMotionDetect", raw_buf, cfg, ctypes.sizeof(cfg))
+        if not ret:
+            return {"supported": True, "enabled": False}
+
+        return {
+            "supported": True,
+            "enabled": bool(cfg.bSmartTrack),
+            "motion_detect_enabled": bool(cfg.bEnable),
+            "tracking_zoom": bool(cfg.bTrackingZoomEnable),
+        }
+
     # ---------- 抓图 ----------
     def capture(self, timeout=8):
         """抓取一帧 JPEG, 返回 bytes"""
