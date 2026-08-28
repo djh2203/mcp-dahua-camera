@@ -9,7 +9,7 @@
 | 工具 | 说明 |
 |------|------|
 | `camera_status` | 摄像头在线状态 |
-| `camera_info` | 设备信息(序列号/通道数/类型) |
+| `camera_info` | 设备信息(型号/序列号/通道数/类型/软件版本/硬件版本/预置点) |
 | `ptz_move` | 云台方向移动(上下左右/对角), speed 1-255, seconds 移动时长 |
 | `ptz_stop` | 停止云台移动 |
 | `ptz_abs_move` | 绝对定位(水平角 pan_deg) |
@@ -40,7 +40,7 @@ uv run mcp-dahua-camera            # 启动 MCP server (stdio)
   "mcpServers": {
     "dahua-camera": {
       "command": "uv",
-      "args": ["run", "--project", "/path/to/mcp-dahua-camera", "mcp-dahua-camera"]
+      "args": ["run", "--project", "/path/to/mcp-dahua-camera", "python", "-m", "mcp_server"]
     }
   }
 }
