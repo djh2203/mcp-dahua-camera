@@ -34,6 +34,40 @@ cfg = load_config()
 MEDIA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "media")
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
+# ---------- 已保存的摄像头凭据 ----------
+_CREDENTIALS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cameras.json")
+
+def _load_credentials():
+    """加载已保存的摄像头凭据"""
+    if os.path.exists(_CREDENTIALS_FILE):
+        try:
+            with open(_CREDENTIALS_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def _save_credential(ip, port, username, password, channel, model=""):
+    """保存摄像头凭据"""
+    creds = _load_credentials()
+    creds[ip] = {
+        "port": port,
+        "username": username,
+        "password": password,
+        "channel": channel,
+        "model": model,
+    }
+    with open(_CREDENTIALS_FILE, "w") as f:
+        json.dump(creds, f, ensure_ascii=False, indent=2)
+
+def _get_credential(ip):
+    """获取已保存的凭据,返回 (port, username, password, channel) 或 None"""
+    creds = _load_credentials()
+    if ip in creds:
+        c = creds[ip]
+        return c["port"], c["username"], c["password"], c["channel"]
+    return None
+
 # ---------- 多摄像头状态管理 ----------
 _cameras = {}       # IP -> Camera 实例
 _active_ip = None   # 当前激活的摄像头 IP
@@ -98,10 +132,19 @@ def t_select_camera(args):
     ip = args.get("ip")
     if not ip:
         return _fail("缺少 ip 参数")
-    port = int(args.get("port", cfg["camera"]["port"]))
-    username = args.get("username", cfg["camera"]["username"])
-    password = args.get("password", cfg["camera"]["password"])
-    channel = int(args.get("channel", cfg["camera"]["channel"]))
+    # 优先用已保存的凭据
+    saved = _get_credential(ip)
+    if saved:
+        port, username, password, channel = saved
+        port = int(args.get("port", port))
+        username = args.get("username", username)
+        password = args.get("password", password)
+        channel = int(args.get("channel", channel))
+    else:
+        port = int(args.get("port", cfg["camera"]["port"]))
+        username = args.get("username", cfg["camera"]["username"])
+        password = args.get("password", cfg["camera"]["password"])
+        channel = int(args.get("channel", cfg["camera"]["channel"]))
     try:
         cam = _add_camera(ip, port, username, password, channel)
         info = {"ip": cam.ip, "online": cam.online}
@@ -111,8 +154,9 @@ def t_select_camera(args):
         try:
             ver = cam.get_device_version()
             info["model"] = ver["detail_type"] or ver["device_type"]
+            _save_credential(ip, port, username, password, channel, info["model"])
         except Exception:
-            pass
+            _save_credential(ip, port, username, password, channel)
         return _ok(**info)
     except CameraError as e:
         return _fail(e)
@@ -120,11 +164,13 @@ def t_select_camera(args):
 
 def t_list_cameras(args):
     result = []
+    # 已连接的摄像头
     for ip, cam in _cameras.items():
         item = {
             "ip": ip,
             "online": cam.online,
             "active": ip == _active_ip,
+            "saved": True,
         }
         if cam.device_info:
             item["serial"] = cam.device_info.sSerialNumber.decode(errors="ignore")
@@ -134,6 +180,17 @@ def t_list_cameras(args):
         except Exception:
             pass
         result.append(item)
+    # 已保存但未连接的摄像头
+    creds = _load_credentials()
+    for ip, c in creds.items():
+        if ip not in _cameras:
+            result.append({
+                "ip": ip,
+                "online": False,
+                "active": False,
+                "saved": True,
+                "model": c.get("model", ""),
+            })
     return _ok(cameras=result, active_ip=_active_ip)
 
 
