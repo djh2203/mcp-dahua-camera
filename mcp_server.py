@@ -4,7 +4,8 @@
 任何支持 MCP 的 agent(Claude Desktop / Cursor / opencode / AI 助手仓库)都可以直接接入:
 云台移动/绝对定位/预置点/抓图/采集麦克风/扬声器播放音频文件。
 
-工具(8 个):
+工具(13 个):
+  search_devices, select_camera, list_cameras,
   camera_status, camera_info, ptz_move, ptz_stop, ptz_abs_move,
   ptz_get_position, preset, capture, record_audio, play_audio
 """
@@ -33,21 +34,42 @@ cfg = load_config()
 MEDIA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "media")
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
-_cam = None
+# ---------- 多摄像头状态管理 ----------
+_cameras = {}       # IP -> Camera 实例
+_active_ip = None   # 当前激活的摄像头 IP
 
 
 def _get_cam():
-    global _cam
-    if _cam is None:
-        _cam = Camera(
-            cfg["camera"]["ip"],
-            cfg["camera"]["port"],
-            cfg["camera"]["username"],
-            cfg["camera"]["password"],
-            cfg["camera"]["channel"],
-        )
-        _cam.login()
-    return _cam
+    """获取当前激活的摄像头, 未选择则报错."""
+    global _active_ip
+    if _active_ip is None or _active_ip not in _cameras:
+        raise CameraError("未选择摄像头, 请先调用 select_camera")
+    cam = _cameras[_active_ip]
+    if not cam.online:
+        raise CameraError(f"摄像头 {_active_ip} 已离线")
+    return cam
+
+
+def _add_camera(ip, port, username, password, channel=0):
+    """创建并登录摄像头, 存入 _cameras, 设为激活."""
+    global _active_ip
+    if ip in _cameras:
+        cam = _cameras[ip]
+        if cam.online:
+            _active_ip = ip
+            return cam
+        # 离线了, 重新连接
+        try:
+            cam.logout()
+        except Exception:
+            pass
+        del _cameras[ip]
+
+    cam = Camera(ip, port, username, password, channel)
+    cam.login()
+    _cameras[ip] = cam
+    _active_ip = ip
+    return cam
 
 
 def _ok(**kw):
@@ -62,7 +84,60 @@ def _result(obj) -> CallToolResult:
     return CallToolResult(content=[TextContent(type="text", text=json.dumps(obj, ensure_ascii=False))])
 
 
-# ---------- 工具实现 ----------
+# ---------- 设备管理工具 ----------
+def t_search_devices(args):
+    timeout = float(args.get("timeout", 8))
+    try:
+        devices = Camera.search_devices(timeout=timeout)
+        return _ok(devices=devices, count=len(devices))
+    except Exception as e:
+        return _fail(e)
+
+
+def t_select_camera(args):
+    ip = args.get("ip")
+    if not ip:
+        return _fail("缺少 ip 参数")
+    port = int(args.get("port", cfg["camera"]["port"]))
+    username = args.get("username", cfg["camera"]["username"])
+    password = args.get("password", cfg["camera"]["password"])
+    channel = int(args.get("channel", cfg["camera"]["channel"]))
+    try:
+        cam = _add_camera(ip, port, username, password, channel)
+        info = {"ip": cam.ip, "online": cam.online}
+        if cam.device_info:
+            info["serial"] = cam.device_info.sSerialNumber.decode(errors="ignore")
+            info["channel_num"] = cam.device_info.nChanNum
+        try:
+            ver = cam.get_device_version()
+            info["model"] = ver["detail_type"] or ver["device_type"]
+        except Exception:
+            pass
+        return _ok(**info)
+    except CameraError as e:
+        return _fail(e)
+
+
+def t_list_cameras(args):
+    result = []
+    for ip, cam in _cameras.items():
+        item = {
+            "ip": ip,
+            "online": cam.online,
+            "active": ip == _active_ip,
+        }
+        if cam.device_info:
+            item["serial"] = cam.device_info.sSerialNumber.decode(errors="ignore")
+        try:
+            ver = cam.get_device_version()
+            item["model"] = ver["detail_type"] or ver["device_type"]
+        except Exception:
+            pass
+        result.append(item)
+    return _ok(cameras=result, active_ip=_active_ip)
+
+
+# ---------- 设备控制工具 ----------
 def t_camera_status(args):
     cam = _get_cam()
     return _ok(online=cam.online, ip=cam.ip)
@@ -208,13 +283,44 @@ def t_play_audio(args):
 # ---------- 工具元数据 ----------
 TOOLS = [
     Tool(
+        name="search_devices",
+        description="局域网搜索大华/Imou 摄像头, 返回设备列表",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "timeout": {"type": "number", "description": "搜索超时(秒), 默认8", "minimum": 3, "maximum": 30},
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="select_camera",
+        description="选择要控制的摄像头(需提供IP和凭据)",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ip": {"type": "string", "description": "摄像头IP地址"},
+                "port": {"type": "integer", "description": "端口, 默认37777"},
+                "username": {"type": "string", "description": "用户名"},
+                "password": {"type": "string", "description": "密码"},
+                "channel": {"type": "integer", "description": "通道号, 默认0"},
+            },
+            "required": ["ip"],
+        },
+    ),
+    Tool(
+        name="list_cameras",
+        description="列出已发现/已连接的摄像头",
+        inputSchema={"type": "object", "properties": {}, "required": []},
+    ),
+    Tool(
         name="camera_status",
-        description="查询摄像头在线状态",
+        description="查询当前选中摄像头的在线状态",
         inputSchema={"type": "object", "properties": {}, "required": []},
     ),
     Tool(
         name="camera_info",
-        description="查询摄像头详细信息(序列号/通道数/设备类型)",
+        description="查询当前选中摄像头的详细信息(型号/序列号/版本/智能跟踪等)",
         inputSchema={"type": "object", "properties": {}, "required": []},
     ),
     Tool(
@@ -293,6 +399,9 @@ TOOLS = [
 ]
 
 HANDLERS = {
+    "search_devices": t_search_devices,
+    "select_camera": t_select_camera,
+    "list_cameras": t_list_cameras,
     "camera_status": t_camera_status,
     "camera_info": t_camera_info,
     "ptz_move": t_ptz_move,

@@ -6,7 +6,6 @@ from pathlib import Path
 
 DEFAULT_CONFIG = {
     "camera": {
-        "ip": "192.168.1.108",
         "port": "37777",
         "username": "admin",
         "password": "admin",

@@ -542,3 +542,83 @@ class Camera:
                 raise CameraError("未采集到音频数据(设备可能无麦克风或通道被占用)")
             pcm = b"".join(buffer)
             return pcm, meta.get("rate", 8000), meta.get("bit", 16)
+
+    # ---------- 设备搜索 ----------
+    @staticmethod
+    def search_devices(timeout=8):
+        """局域网搜索大华/Imou 摄像头, 返回去重后的设备列表."""
+        import socket as _sock
+        from NetSDK.NetSDK import NetClient as _NetClient
+        from NetSDK.SDK_Enum import EM_SEND_SEARCH_TYPE
+        from NetSDK.SDK_Struct import (
+            NET_IN_STARTSERACH_DEVICE,
+            NET_OUT_STARTSERACH_DEVICE,
+            DEVICE_NET_INFO_EX2,
+        )
+        from NetSDK.SDK_Callback import CB_FUNCTYPE
+
+        found = {}  # ip -> info (去重)
+
+        _SEARCH_CB = CB_FUNCTYPE(None, ctypes.c_longlong, ctypes.POINTER(DEVICE_NET_INFO_EX2), ctypes.c_void_p)
+
+        @_SEARCH_CB
+        def _cb(lSearchHandle, pDevNetInfo, pUserData):
+            try:
+                buf = ctypes.cast(pDevNetInfo, ctypes.POINTER(DEVICE_NET_INFO_EX2)).contents
+                dev = buf.stuDevInfo
+                if dev.iIPVersion == 4:
+                    ip = dev.szIP.decode(errors="ignore")
+                    if ip not in found:
+                        found[ip] = {
+                            "ip": ip,
+                            "port": dev.nPort,
+                            "http_port": dev.nHttpPort,
+                            "mac": dev.szMac.decode(errors="ignore"),
+                            "type": dev.szDeviceType.decode(errors="ignore"),
+                            "model": dev.szDetailType.decode(errors="ignore"),
+                        }
+            except Exception:
+                pass
+
+        sdk = _NetClient()
+        sdk.InitEx(None, 0)
+
+        # 获取本机 IP
+        local_ips = set()
+        try:
+            out = __import__("subprocess").check_output(["hostname", "-I"], text=True)
+            for ip in out.split():
+                if ":" not in ip:
+                    local_ips.add(ip)
+        except Exception:
+            pass
+        try:
+            hostname = _sock.gethostname()
+            for info in _sock.gethostbyname_ex(hostname):
+                if isinstance(info, list):
+                    for ip in info:
+                        if ":" not in ip:
+                            local_ips.add(ip)
+        except Exception:
+            pass
+
+        handles = []
+        for lip in local_ips:
+            start_in = NET_IN_STARTSERACH_DEVICE()
+            start_in.dwSize = ctypes.sizeof(NET_IN_STARTSERACH_DEVICE)
+            start_in.emSendType = EM_SEND_SEARCH_TYPE.MULTICAST_AND_BROADCAST
+            start_in.cbSearchDevices = _cb
+            start_in.szLocalIp = lip.encode()
+            start_out = NET_OUT_STARTSERACH_DEVICE()
+            start_out.dwSize = ctypes.sizeof(NET_OUT_STARTSERACH_DEVICE)
+            h = sdk.StartSearchDevicesEx(start_in, start_out)
+            if h != 0:
+                handles.append(h)
+
+        time.sleep(timeout)
+
+        for h in handles:
+            sdk.StopSearchDevices(h)
+        sdk.Cleanup()
+
+        return list(found.values())
