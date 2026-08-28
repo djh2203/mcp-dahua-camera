@@ -332,7 +332,7 @@ class Camera:
 
     def get_smart_track(self):
         """查询智能跟踪配置. 返回 dict(supported: bool, enabled: bool)"""
-        from NetSDK.SDK_Struct import NET_CFG_SMART_MOTION_DETECT
+        import json as _json
 
         # 先获取原始配置
         buf_size = 1024 * 1024  # 1MB buffer
@@ -342,19 +342,39 @@ class Camera:
         if not ret:
             return {"supported": False, "enabled": False}
 
-        # 解析到结构体
-        cfg = NET_CFG_SMART_MOTION_DETECT()
-        cfg.dwSize = ctypes.sizeof(cfg)
-        ret = self.sdk.ParseData("SmartMotionDetect", raw_buf, cfg, ctypes.sizeof(cfg))
-        if not ret:
-            return {"supported": True, "enabled": False}
+        raw_data = raw_buf.raw.rstrip(b"\x00")
 
-        return {
-            "supported": True,
-            "enabled": bool(cfg.bSmartTrack),
-            "motion_detect_enabled": bool(cfg.bEnable),
-            "tracking_zoom": bool(cfg.bTrackingZoomEnable),
-        }
+        # 尝试 JSON 格式 (IMOU 摄像头)
+        if raw_data.startswith(b"{"):
+            try:
+                obj = _json.loads(raw_data.decode(errors="ignore"))
+                params = obj.get("params", {})
+                table = params.get("table", {})
+                enabled = table.get("Enable", False)
+                return {
+                    "supported": True,
+                    "enabled": bool(enabled),
+                }
+            except Exception:
+                pass
+
+        # 尝试二进制结构体格式 (大华摄像头)
+        from NetSDK.SDK_Struct import NET_CFG_SMART_MOTION_DETECT
+        try:
+            cfg = NET_CFG_SMART_MOTION_DETECT()
+            cfg.dwSize = ctypes.sizeof(cfg)
+            ret = self.sdk.ParseData("SmartMotionDetect", raw_buf, cfg, ctypes.sizeof(cfg))
+            if ret:
+                return {
+                    "supported": True,
+                    "enabled": bool(cfg.bSmartTrack),
+                    "motion_detect_enabled": bool(cfg.bEnable),
+                    "tracking_zoom": bool(cfg.bTrackingZoomEnable),
+                }
+        except Exception:
+            pass
+
+        return {"supported": True, "enabled": False}
 
     # ---------- 抓图 ----------
     def capture(self, timeout=8):
