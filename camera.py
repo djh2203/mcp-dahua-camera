@@ -503,6 +503,89 @@ class Camera:
         return True
 
     # ---------- 麦克风采集 ----------
+    def record_audio_stream(self, seconds=6.0):
+        """从**媒体流的音频轨**采集连续音频, 返回 (pcm16_bytes, 16000, 16)。
+
+        比对讲通道(record_audio)好在哪: 对讲通道有静音抑制, 3 秒只回传 ~0.3 秒数据;
+        这里实测 8 秒采集 -> 抽出音频时长 8.000 秒, 是**连续**的, 语音识别才有完整输入。
+        实现: RealPlayByDataType(从码流1, 音频转码封装成 FLV) -> 攒够 seconds 秒 ->
+        ffmpeg 解出 16kHz 单声道 PCM16(设备实际给的是 AAC 16kHz, 比 G.711 还好)。
+
+        代价: 播放 h264 从码流白占了约 27 KB/s 带宽(设备只肯推整路码流, 没有纯音频流选项)。
+        """
+        import subprocess
+
+        from NetSDK.SDK_Callback import CB_FUNCTYPE
+        from NetSDK.SDK_Enum import (
+            EM_AUDIO_DATA_TYPE,
+            EM_REAL_DATA_TYPE,
+            SDK_RealPlayType,
+        )
+        from NetSDK.SDK_Struct import (
+            NET_IN_REALPLAY_BY_DATA_TYPE,
+            NET_OUT_REALPLAY_BY_DATA_TYPE,
+        )
+
+        if self.loginID == 0:
+            raise CameraError("未登录")
+
+        buf = bytearray()
+        _CB = CB_FUNCTYPE(
+            None, C_LLONG, C_DWORD, ctypes.POINTER(ctypes.c_byte), C_DWORD, C_LLONG, C_LDWORD
+        )
+
+        @_CB
+        def _cb(lRealHandle, dwDataType, pBuffer, dwBufSize, dwUser, dwUser2=0):
+            if dwBufSize:
+                buf.extend(ctypes.string_at(pBuffer, dwBufSize))
+
+        in_param = NET_IN_REALPLAY_BY_DATA_TYPE()
+        in_param.dwSize = ctypes.sizeof(NET_IN_REALPLAY_BY_DATA_TYPE)
+        in_param.nChannelID = self.channel
+        in_param.hWnd = 0
+        in_param.rType = SDK_RealPlayType.Realplay_1      # 从码流1, 比主码流省带宽
+        in_param.cbRealData = _cb
+        in_param.emDataType = EM_REAL_DATA_TYPE.FLV_STREAM
+        in_param.emAudioType = EM_AUDIO_DATA_TYPE.G711A   # 设备实际给 AAC 16k, 一样能解
+        in_param.dwUser = C_LDWORD(0)
+
+        out_param = NET_OUT_REALPLAY_BY_DATA_TYPE()
+        out_param.dwSize = ctypes.sizeof(NET_OUT_REALPLAY_BY_DATA_TYPE)
+
+        handle = self.sdk.RealPlayByDataType(self.loginID, in_param, out_param, 5000)
+        if not handle:
+            raise CameraError(f"开启音频流失败: {self.sdk.GetLastErrorMessage()}")
+        try:
+            time.sleep(float(seconds))
+        finally:
+            self.sdk.StopRealPlayEx(handle)
+
+        if not buf:
+            raise CameraError("未采集到音频数据")
+
+        # 回调给的是设备私有封装(DHAV)或 FLV, 开头偶尔混有杂字节 -> 从 magic 处截起
+        raw = bytes(buf)
+        for magic in (b"DHAV", b"FLV"):
+            i = raw.find(magic)
+            if i >= 0:
+                raw = raw[i:]
+                break
+
+        def _decode(*extra):
+            return subprocess.run(
+                ["ffmpeg", "-v", "error", *extra, "-i", "pipe:0", "-vn", "-ac", "1",
+                 "-ar", "16000", "-f", "s16le", "-"],
+                input=raw, capture_output=True, timeout=60,
+            )
+
+        p = _decode()
+        if not p.stdout:
+            # 停流时最后一帧常被截断, 容忍错误再试一次
+            p = _decode("-err_detect", "ignore_err")
+        if not p.stdout:
+            raise CameraError(f"解码音频流失败: {p.stderr.decode(errors='ignore')[:200]}")
+        return p.stdout, 16000, 16
+
     def record_audio(self, seconds=5.0, on_retry=None):
         """采集摄像头麦克风音频, 返回 (pcm16_bytes, sample_rate, audio_bit).
         用 StartTalkByDataType 全双工对讲通道, 收到设备麦克风上行的裸 PCM 音频.

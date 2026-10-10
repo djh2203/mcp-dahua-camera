@@ -11,6 +11,7 @@ uv run python scripts/search_devices.py  # 局域网搜设备
 uv run python scripts/test_mic.py        # 麦克风测试
 uv run python scripts/diag_talk.py --file <16k g711> --rate 16000 --interval 40   # 看发送节奏
 uv run python scripts/diag_talk.py --file <16k g711> --rate 16000 --interval 40 --move   # 播放时转云台对照
+uv run python scripts/diag_mic.py --seconds 6 --file <16k g711>   # 麦克风两条路对比 + 全双工
 uv run python scripts/query_caps.py      # 查设备能力(PTZ/智能动检/扬声器)
 ```
 
@@ -31,7 +32,13 @@ uv run python scripts/query_caps.py      # 查设备能力(PTZ/智能动检/扬�
 
 ## 设备/协议坑(重要)
 
-- 摄像头麦克风**静音时也持续回传小数据块**,无法用"数据有无/能量"判断说话结束,`record_audio` 只能按固定时长(`time.sleep(seconds)`)采集(见 `camera.py` record_audio)。安静房间里上行被**静音抑制/VAD 门控**,3 秒只回传约 0.2-0.3 秒有效音频属正常;检测麦克风是否真通,用 `scripts/test_mic.py` 对着设备出声测。
+- 麦克风有**两条路**, 别再用错(`record_audio` 的 `source` 参数选, 默认 `stream`):
+  1. **`stream`(媒体流音频轨, 推荐, 默认)**: `RealPlayByDataType`(`rType=Realplay_1` 从码流1, `emDataType=FLV_STREAM`, `emAudioType=G711A`) + 攒 N 秒 + ffmpeg 解 PCM16。实测 **6 秒采集 -> 6.14 秒音频(连续)**, 设备实际给 AAC 16kHz, ffmpeg 也能直接吃回调里的大华私有封装(`DHAV`)。**语音识别必须用这条**。代价: 从码流的 h264 白占约 27 KB/s。
+  2. **`talk`(对讲通道)**: 有静音抑制/VAD 门控, 实测 6 秒只回传 **0.3 秒**(5%), 只在需要"边听边说"的老逻辑里用。安静房间里"3 秒只有 0.2-0.3 秒"是这条路的天性, 不是故障。
+  - 回归检查: `uv run python scripts/diag_mic.py --seconds 6 --file <16k g711>`(两条路对比 + 全双工检查)
+  - **全双工可行**: 一边 `stream` 采集、一边 `talk` 播报, 两边都成功(实测采到 6.14 秒 + 播报 ok)—— 所以"边听边说/打断"在设备层是支持的。
+  - 健壮性: 停流时最后一帧常被截断, 且开头偶尔混杂字节 -> 先按 `DHAV`/`FLV` magic 截齐, 失败再用 `-err_detect ignore_err` 重试一次。
+  - 回调里 `dwDataType` 取值: 0=私有码流, 1=带帧信息, 2=YUV, 3=PCM 音频(还有实测见到的 1005=音频帧); `SetRealDataCallBackEx2` 的 `dwFlag` 可用 `EM_REALDATA_FLAG.PCM_AUDIO_DATA=0x08` 过滤(但本设备**抽不出 PCM**, 只给私有封装, 所以走上面第 1 条)。
 - **扬声器播放卡顿: 两个我们能修的根因 + 一个修不了的**(都实测过, 用 `scripts/diag_talk.py` 复查):
   1. **采样率是第一根因**: 本设备按 **16kHz** 消费音频。喂 8kHz 内容 = 只有一半数据量, 设备持续饿死 → 断句/卡顿, 而且**怎么调发送速率都没用**(实测 8kHz 时 89% 和 175% 实时都还卡)。`speak_file` 默认 `sample_rate=16000`, 调用方必须按内容如实声明(cam-agent 的 TTS 已改产出 16kHz)。判别方法: 同一段语音分别按 8k/16k 声明播一遍, 正常语速且流畅的那个才是对的。
   2. **发送间隔**: `NET_IN_TALK_SEND_DATA_FILE.dwSendInterval` 是"默认发送间隔的**百分比**"(0/100=SDK 默认, <100 更快, >100 更慢), **不是毫秒**。对讲是实时通道 + 设备端小缓冲: 太慢饿死断句(60 = 0.89 倍实时, 实测丢字), 太快则先到的被覆盖(20 = 2.7 倍实时, 实测只能听到句子后半段)。现用 `_SEND_INTERVAL_PERCENT = 40`(1.34 倍实时)。重标: `uv run python scripts/diag_talk.py --file <16k g711> --rate 16000 --sweep`

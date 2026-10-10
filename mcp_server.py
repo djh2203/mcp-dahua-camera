@@ -258,10 +258,19 @@ def t_capture(args):
 
 
 def t_record_audio(args):
-    """采集摄像头麦克风 PCM, 保存为 wav 文件并返回路径/采样率"""
+    """采集摄像头麦克风 PCM, 保存为 wav 文件并返回路径/采样率
+
+    source: stream(默认)= 媒体流音频轨, **连续**, 时长完整, 语音识别用这个;
+            talk = 对讲通道, 有静音抑制(3 秒只回传 ~0.3 秒数据), 只在需要全双工对讲时用。
+    """
     seconds = float(args.get("seconds", 5))
+    source = args.get("source", "stream")
     try:
-        pcm, rate, bit = _get_cam().record_audio(seconds)
+        cam = _get_cam()
+        if source == "talk":
+            pcm, rate, bit = cam.record_audio(seconds)
+        else:
+            pcm, rate, bit = cam.record_audio_stream(seconds)
         import wave
 
         fd, fpath = tempfile.mkstemp(suffix=".wav", prefix="rec_", dir=MEDIA_DIR)
@@ -271,7 +280,8 @@ def t_record_audio(args):
             w.setsampwidth(bit // 8)
             w.setframerate(rate)
             w.writeframes(pcm)
-        return _ok(path=fpath, sample_rate=rate, audio_bit=bit, audio_seconds=round(len(pcm) / 2 / rate, 2))
+        return _ok(path=fpath, sample_rate=rate, audio_bit=bit, source=source,
+                   audio_seconds=round(len(pcm) / 2 / rate, 2))
     except CameraError as e:
         return _fail(e)
 
@@ -389,10 +399,14 @@ TOOLS = [
     ),
     Tool(
         name="record_audio",
-        description="采集摄像头麦克风音频, 保存为 wav 文件并返回路径/采样率。seconds: 录音时长(默认5)",
+        description="采集摄像头麦克风音频, 保存为 wav 文件并返回路径/采样率。source 默认 stream(=媒体流音频轨, 连续、时长完整, 语音识别用这个); talk=对讲通道(有静音抑制, 只回传零头)",
         inputSchema={
             "type": "object",
-            "properties": {"seconds": {"type": "number", "minimum": 1, "maximum": 30, "default": 5}},
+            "properties": {
+                "seconds": {"type": "number", "minimum": 1, "maximum": 30, "default": 5},
+                "source": {"type": "string", "enum": ["stream", "talk"], "default": "stream",
+                           "description": "stream=媒体流音频轨(连续, 默认); talk=对讲通道(静音抑制)"},
+            },
             "required": [],
         },
     ),
