@@ -38,7 +38,9 @@ uv run python scripts/query_caps.py      # 查设备能力(PTZ/智能动检/扬�
 - **剩下的卡顿不是我们能修的**: 同一配置连播 5 遍实测 **1 遍略卡 / 3 遍很卡 / 1 遍很顺**, 而 5 遍的发送节奏逐 0.5 秒完全一致(21.8 KB/s ≈ 1.36 倍实时); 甚至播放期间让云台不停转动, 发送节奏也一模一样(`--move` 对照)。结论: **数据是均匀送到的, 是设备自己在视频/跟踪负载下播放抖动**, 与摄像头转动、画面变化强相关。判据脚本:
   `uv run python scripts/diag_talk.py --file <16k g711> --rate 16000 --interval 40`(看"发送节奏")+ 加 `--move` 复现"一动就断音"。听懂感必须**多测几遍**(单遍结论会被随机性骗)。
 - 试过但此型号不支持的"根治"方向: `speak.getCaps` 查询失败(设备不支持扬声器音频文件播放能力), 所以**没法把音频传进设备让它自己播**; `CLIENT_IpSpeaker*`/`TalkChannel`/上传接口在 Python 绑定里也都没有, 硬要用得盲猜 ctypes 结构体, 风险太高。
-- 未验证的下一步(按性价比): ①减少设备负载 —— 关掉自动跟踪、关掉手机上正在看的实时画面、降视频码率, 再重跑上面的 5 遍测试; ②试更省设备资源的编码(`EM_A_TALK_CODING_TYPE` 里还有 AMR/G726/AAC/G722.1, 但设备是否支持未知, 只能用听感验证)。
+- **"摄像机动不停"与音频卡顿的关系(已客观测量)**: `scripts/check_motion.py` 用"连续两帧 PSNR"判断在不在动(>30dB 静止, <20dB 正在转)。实测这台 IMOU 有 **50%~69% 的时间在动**, 与播放卡顿强相关; 用户在 IMOU app 里对讲时 app 会把它停住, 所以 app 里对讲很流畅。
+- **我们没法让它静止(三条都验证过)**: ① `ptz_stop` 冻不住 —— 跟踪会立刻重新下发移动(边按边测仍有 69% 时间在动); ② 设备认的配置名只有 `SmartMotionDetect` / `MotionDetect` / `VideoWidget` / `VideoInOptions`, **没有任何跟踪字段**; ③ 枚举式配置类型(`NET_EM_CFG_OPERATE_TYPE` 26 项)里只有 `SMART_MOTION_DETECT`, 设备却报"智能跟踪=关", 与事实不符。=> **那个自动跟踪是 IMOU app/云侧驱动的, 开关只在 app 里**; 想让播报流畅就得在 app 里关掉智能追踪, 或播报时别开着 app 的实时画面。(`CONTROL_SMART_SWITCH` / `IpSpeaker*` / `TalkChannel` 在 Python 绑定里都没有结构体, 硬用要盲猜 ctypes, 不做。)
+- 未验证的下一步(按性价比): ①在 app 里关掉智能追踪后重跑 5 遍听感测试(应该是根治); ②试更省设备资源的编码(`EM_A_TALK_CODING_TYPE` 里还有 AMR/G726/AAC/G722.1, 设备是否支持未知)。
 - 编码与音频头: 本设备**只有 `mulaw`(G.711u)+ `bNeedHead=1` 出声**; 实测 `alaw` 和不加音频头都是**静音**。
 - `TalkSendDataByFile` 是**异步**的:必须靠 `cbSendPos` 回调判断真的发完,提前 `StopTalkSendDataByFile` 会把话截断。`speak_file` 现在等回调报满,再补上剩余播放时长才停。
 - 对讲通道被占用报 `talk has opened by other client` 时会重试,最长 120 秒后报错。其中"是否重启摄像头"的 `input()` 只在**终端**(`sys.stdin.isatty()`)才弹——MCP stdio 下 stdin 是协议管道,弹了会挂起并污染协议,所以被挡掉了。想重启设备:先 `StopTalkEx` 释放通道,或人工调用 `Camera.reboot()`(`RebootDev` 报 `Protocol error` 属正常,设备实际已重启)。
