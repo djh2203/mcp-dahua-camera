@@ -31,10 +31,12 @@
 ```bash
 uv sync
 cp config.example.ini config.ini   # 填入默认凭据(端口/用户名/密码)
-uv run python -m mcp_server        # 启动 MCP server (stdio)
+uv run python -m mcp_server        # 启动 MCP server (stdio) — 需在本仓库目录下运行
 ```
 
-配置也可用环境变量覆盖: `CAM_PORT` / `CAM_USER` / `CAM_PASS` / `CAM_CHANNEL`
+配置也可用环境变量覆盖: `CAM_IP` / `CAM_PORT` / `CAM_USER` / `CAM_PASS` / `CAM_CHANNEL`
+
+`config.ini` 只是**新设备的默认凭据**;`select_camera` 连上后该设备凭据会存进 `cameras.json`(gitignored),之后切换只传 IP 即可。
 
 ## 作为 MCP client 接入
 
@@ -45,11 +47,13 @@ uv run python -m mcp_server        # 启动 MCP server (stdio)
   "mcpServers": {
     "dahua-camera": {
       "command": "uv",
-      "args": ["run", "--project", "/path/to/mcp-dahua-camera", "python", "-m", "mcp_server"]
+      "args": ["run", "--directory", "/path/to/mcp-dahua-camera", "python", "-m", "mcp_server"]
     }
   }
 }
 ```
+
+> 用 `--directory` 而不是 `--project`:后者只切依赖环境、不切工作目录,而 `python -m mcp_server` 要靠 cwd 找到模块,配错会报 `No module named mcp_server`。
 
 ## 目录
 
@@ -57,6 +61,7 @@ uv run python -m mcp_server        # 启动 MCP server (stdio)
 camera.py        # 摄像头 SDK 封装(NetSDK) + 设备搜索
 mcp_server.py    # MCP server (13 个工具)
 config.py        # 配置加载(支持环境变量覆盖)
+cameras.json     # 已连接设备的凭据(自动生成, gitignored)
 scripts/         # 设备调试脚本(搜设备/测云台/测麦克风/查能力)
 vendor/          # NetSDK wheel
 media/           # 抓图/录音产物

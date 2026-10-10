@@ -1,6 +1,7 @@
 # coding=utf-8
 import ctypes
 import os
+import sys
 import threading
 import time
 
@@ -188,18 +189,6 @@ class Camera:
         if seconds > 0:
             time.sleep(seconds)
             self.sdk.PTZControlEx2(self.loginID, self.channel, cmd, p1, p2, p3, True)
-        return True
-
-    def ptz_start(self, action, speed=5):
-        cmd = PTZ_ACTION_MAP.get(action)
-        if cmd is None:
-            raise CameraError(f"未知云台动作: {action}")
-        if action in _DIAGONAL:
-            p1, p2, p3 = speed, speed, 0
-        else:
-            p1, p2, p3 = 0, speed, 0
-        if not self.sdk.PTZControlEx2(self.loginID, self.channel, cmd, p1, p2, p3, False):
-            raise CameraError(f"云台启动失败: {self.sdk.GetLastErrorMessage()}")
         return True
 
     def ptz_stop(self, action="up", speed=5):
@@ -502,8 +491,9 @@ class Camera:
                 err = self.sdk.GetLastErrorMessage()
                 if "talk has opened" in err:
                     attempts += 1
-                    # 连续 3 次仍被占用 -> 询问是否重启摄像头
-                    if attempts >= 3:
+                    # 连续 3 次仍被占用 -> 询问是否重启摄像头.
+                    # 只在终端提示: 经 MCP stdio 调用时 stdin 是协议管道, input() 会挂起并污染协议.
+                    if attempts >= 3 and sys.stdin.isatty():
                         answer = input(
                             f"对讲通道连续 {attempts} 次被占用, 是否重启摄像头? (y/n): "
                         ).strip().lower()

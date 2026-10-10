@@ -18,5 +18,5 @@ uv.lock
 .idea/
 .vscode/
 
-
-AGENTS.md
+# 每台摄像头成功 select_camera 后自动生成的凭据, 不入库
+cameras.json

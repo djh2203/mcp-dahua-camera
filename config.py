@@ -27,7 +27,6 @@ def load_config(path=None):
         candidates = [
             Path("config.ini"),
             Path(__file__).parent / "config.ini",
-            Path.home() / ".camgate" / "config.ini",
         ]
     else:
         candidates = [Path(path)]

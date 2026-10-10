@@ -11,11 +11,8 @@
 """
 import json
 import os
-import sys
 import tempfile
 import time
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
