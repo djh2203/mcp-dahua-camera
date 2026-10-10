@@ -39,7 +39,10 @@ uv run python scripts/query_caps.py      # 查设备能力(PTZ/智能动检/扬�
   `uv run python scripts/diag_talk.py --file <16k g711> --rate 16000 --interval 40`(看"发送节奏")+ 加 `--move` 复现"一动就断音"。听懂感必须**多测几遍**(单遍结论会被随机性骗)。
 - 试过但此型号不支持的"根治"方向: `speak.getCaps` 查询失败(设备不支持扬声器音频文件播放能力), 所以**没法把音频传进设备让它自己播**; `CLIENT_IpSpeaker*`/`TalkChannel`/上传接口在 Python 绑定里也都没有, 硬要用得盲猜 ctypes 结构体, 风险太高。
 - **"摄像机动不停"与音频卡顿的关系(已客观测量)**: `scripts/check_motion.py` 用"连续两帧 PSNR"判断在不在动(>30dB 静止, <20dB 正在转)。实测这台 IMOU 有 **50%~69% 的时间在动**, 与播放卡顿强相关; 用户在 IMOU app 里对讲时 app 会把它停住, 所以 app 里对讲很流畅。
-- **我们没法让它静止(三条都验证过)**: ① `ptz_stop` 冻不住 —— 跟踪会立刻重新下发移动(边按边测仍有 69% 时间在动); ② 设备认的配置名只有 `SmartMotionDetect` / `MotionDetect` / `VideoWidget` / `VideoInOptions`, **没有任何跟踪字段**; ③ 枚举式配置类型(`NET_EM_CFG_OPERATE_TYPE` 26 项)里只有 `SMART_MOTION_DETECT`, 设备却报"智能跟踪=关", 与事实不符。=> **那个自动跟踪是 IMOU app/云侧驱动的, 开关只在 app 里**; 想让播报流畅就得在 app 里关掉智能追踪, 或播报时别开着 app 的实时画面。(`CONTROL_SMART_SWITCH` / `IpSpeaker*` / `TalkChannel` 在 Python 绑定里都没有结构体, 硬用要盲猜 ctypes, 不做。)
+- **播报时暂停"智能跟踪"(已实现, `PAUSE_TRACK_WHILE_SPEAKING`)**: app 里的两个开关对应两个配置 —— **"画面变化"=`MotionDetect`**(开着不影响音频)、**"智能跟踪"=`SmartMotionDetect.Enable`**(就是它让云台追人、让播报断句)。`speak_file` 现在播报前把它写 False + 发 `STOP_MOVE`(=139, 停移动+停巡航, 结构体 `NET_IN_STOP_MOVE_INFO` 在 Python 里有, 且这版 `PTZControlEx2` 支持 `param4` 结构指针), 播完按读到的原值恢复。副作用:播报那几秒不追踪(app 对讲时也是这个行为, 用户认可)。不想用就把常量设 False。
+- **配置读写的坑**: `SetNewDevConfig("SmartMotionDetect", json)` 写入**会真的改变运行行为**(写完几秒后云台开始追人), 但 `GetNewDevConfig` 回读**永远反映 app/云里的设置, 不反映运行时** —— 所以"是否暂停"不能靠回读判断, 要一律先写 False、再按回读值恢复。写 payload 用整份读到的 JSON(含 id/session)或只发 `{"params": ...}` 都能被接受。
+- **`User parameter is illegal` 是正常的**: 无进行中的移动时调 `ptz_stop`(八向停止)会返回参数非法, `camera.py` 本来就容忍它 —— 那句 print 来自 SDK 包装层, 不是故障。改用 `STOP_MOVE` 优先后就不再出现。
+- 测量噪声警告: 智能跟踪**只在画面里出现可跟踪目标时才动**, 所以"在不在动"的单次采样毫无意义(实测同一状态出现过 50% / 69% / 38% / 0%)。判定必须多轮 + 同时确认当时有目标。
 - 未验证的下一步(按性价比): ①在 app 里关掉智能追踪后重跑 5 遍听感测试(应该是根治); ②试更省设备资源的编码(`EM_A_TALK_CODING_TYPE` 里还有 AMR/G726/AAC/G722.1, 设备是否支持未知)。
 - 编码与音频头: 本设备**只有 `mulaw`(G.711u)+ `bNeedHead=1` 出声**; 实测 `alaw` 和不加音频头都是**静音**。
 - `TalkSendDataByFile` 是**异步**的:必须靠 `cbSendPos` 回调判断真的发完,提前 `StopTalkSendDataByFile` 会把话截断。`speak_file` 现在等回调报满,再补上剩余播放时长才停。

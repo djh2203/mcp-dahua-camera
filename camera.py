@@ -62,6 +62,15 @@ _DIAGONAL = {"leftup", "leftdown", "rightup", "rightdown"}
 #   (用 scripts/diag_talk.py 的发送节奏 + --move 对照可复现)。要根治得减少设备负载。
 _SEND_INTERVAL_PERCENT = 40
 
+# 播报时暂停"智能跟踪", 播完恢复。
+# 实测依据: 开着智能跟踪时摄像头 50%~69% 的时间在动, 播报随机断句/丢字; 关掉后 0% 在动,
+# 同一配置连播 5 遍全顺。注意卡的是"转起来之后设备播不好音频", 不是云台电机本身:
+# app 里"画面变化"(= MotionDetect)开着不影响音频, 只有它下面的"智能跟踪"才吃。
+# 这个开关落在 JSON 配置 SmartMotionDetect.Enable 上(不是 SMART_MOTION_DETECT 那个二进制
+# 结构体, 那里的 bSmartTrack 是另一个功能), 可以用 SetNewDevConfig 写。
+PAUSE_TRACK_WHILE_SPEAKING = True
+_TRACK_CFG = "SmartMotionDetect"
+
 
 class CameraError(Exception):
     pass
@@ -394,13 +403,72 @@ class Camera:
             raise CameraError("抓图无数据")
         return data
 
+    def stop_move(self):
+        """停止云台移动 + 停止巡航(STOP_MOVE=139, 比八向停止更彻底).
+
+        设备无进行中的移动时可能返回"参数非法", 属正常。
+        """
+        from NetSDK.SDK_Struct import NET_IN_STOP_MOVE_INFO
+
+        in_param = NET_IN_STOP_MOVE_INFO()
+        in_param.dwSize = ctypes.sizeof(NET_IN_STOP_MOVE_INFO)
+        ret = self.sdk.PTZControlEx2(
+            self.loginID, self.channel, SDK_PTZ_ControlType.STOP_MOVE,
+            0, 0, 0, False, ctypes.byref(in_param),
+        )
+        if not ret:
+            err = self.sdk.GetLastErrorMessage()
+            if "illegal" not in err.lower() and "参数" not in err:
+                raise CameraError(f"停止云台失败: {err}")
+        return True
+
     # ---------- 扬声器 / 对讲 ----------
+    def _read_track_cfg(self):
+        """读"智能跟踪"配置(SmartMotionDetect, JSON). 失败返回 None(调用方照常播)."""
+        import json
+
+        try:
+            raw = ctypes.create_string_buffer(64 * 1024)
+            err = ctypes.c_int(0)
+            if not self.sdk.GetNewDevConfig(
+                self.loginID, _TRACK_CFG, self.channel, raw, ctypes.sizeof(raw), err, 3000
+            ):
+                return None
+            txt = raw.raw.rstrip(b"\x00").decode(errors="ignore")
+            return json.loads(txt)
+        except Exception:
+            return None
+
+    def _write_track_enabled(self, cfg, enable):
+        """按读到的原配置整份写回, 只改 Enable. 返回是否成功."""
+        import json
+
+        try:
+            cfg["params"]["table"]["Enable"] = bool(enable)
+            payload = json.dumps(cfg).encode()
+            buf = ctypes.create_string_buffer(payload, len(payload))
+            ok = bool(
+                self.sdk.SetNewDevConfig(
+                    self.loginID, _TRACK_CFG, self.channel, buf, len(payload), 0, 0, 3000
+                )
+            )
+            if not ok:
+                print(f"[摄像头] 写 {_TRACK_CFG}.Enable={enable} 失败: "
+                      f"{self.sdk.GetLastErrorMessage()}", flush=True)
+            return ok
+        except Exception as e:
+            print(f"[摄像头] 写 {_TRACK_CFG}.Enable={enable} 异常: {e}", flush=True)
+            return False
+
     def speak_file(self, g711a_path, sample_rate=16000, audio_bit=8, codec="mulaw"):
         """把裸音频文件推给设备扬声器播放.
 
         sample_rate 必须和文件内容一致: 本设备(IMOU LC-S2V)按 **16kHz** 消费音频,
         喂 8kHz 内容会被它当 16kHz 播 -> 实际只有一半数据量 -> 播放卡顿/断句。
         codec: 只有 mulaw(G.711u) 出声; alaw 在本设备上是静音。
+
+        播报期间会临时关掉"智能跟踪"(PAUSE_TRACK_WHILE_SPEAKING), 播完恢复 —— 否则
+        摄像头一边追踪一边播, 音频会随机断句(实测 5 遍里 3 遍很卡); 关掉后 5 遍全顺。
         """
         if self.loginID == 0:
             raise CameraError("未登录")
@@ -443,8 +511,28 @@ class Camera:
         if not handle:
             raise CameraError(f"开启对讲失败: {self.sdk.GetLastErrorMessage()}")
 
+        track_cfg = None  # (原配置, 原 Enable 值); 非 None = 我们临时关过跟踪, finally 里要恢复
         try:
             t0 = time.time()
+
+            # 先关掉"智能跟踪": 摄像头一边追踪一边播会随机断句/丢字
+            # (实测开着时 5 遍里 3 遍很卡; 关掉后 0% 在动、5 遍全顺)
+            # 注意: 回读值只反映 app/云的设置, 不反映运行时状态 —— 所以这里一律写 False,
+            # 播完再按读到的原值恢复(实测 SDK 写 True 能让它真的追起来, 但回读仍是 False)。
+            if PAUSE_TRACK_WHILE_SPEAKING:
+                cfg = self._read_track_cfg()
+                if cfg is not None:
+                    was_enabled = bool(cfg.get("params", {}).get("table", {}).get("Enable"))
+                    if self._write_track_enabled(cfg, False):
+                        track_cfg = (cfg, was_enabled)
+                        try:
+                            self.stop_move()   # STOP_MOVE: 停移动 + 停巡航
+                        except CameraError:
+                            self.ptz_stop()    # 兜底(设备不支持 STOP_MOVE 时)
+                        time.sleep(0.8)        # 等设备真正停下来
+                    else:
+                        print("[摄像头] 暂停智能跟踪失败, 照常播报", flush=True)
+
             if not self.sdk.TalkSendDataByFile(handle, talk_in, talk_out):
                 raise CameraError(f"发送语音失败: {self.sdk.GetLastErrorMessage()}")
 
@@ -464,6 +552,11 @@ class Camera:
         finally:
             self.sdk.StopTalkSendDataByFile(handle)
             self.sdk.StopTalkEx(handle)
+            if track_cfg is not None:
+                # 恢复成播报前的值(失败也不影响本次播报, 只打日志)
+                cfg, was_enabled = track_cfg
+                if not self._write_track_enabled(cfg, was_enabled):
+                    print("[摄像头] 恢复智能跟踪失败, 请在 app 里检查该开关", flush=True)
         return True
 
     # ---------- 麦克风采集 ----------
