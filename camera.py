@@ -53,9 +53,9 @@ _DIAGONAL = {"leftup", "leftdown", "rightup", "rightdown"}
 
 # 对讲发送间隔, 单位是"默认间隔的百分比"(0/100=SDK默认, <100 更快), 不是毫秒!
 # 实测本设备(SDK 默认=100)只有 4238 B/s, 而 8kHz G.711 实时播放需要 8000 B/s
-# -> 设备喂不饱, 播放卡顿/断句. 30 实测 ~1.75 倍实时, 留够余量又不撑爆设备缓冲.
+# -> 设备喂不饱, 播放卡顿/断句. 20 实测 ~2.7 倍实时.
 # 换设备/换采样率要重测: uv run python scripts/diag_talk.py --file <g711> --sweep
-_SEND_INTERVAL_PERCENT = 30
+_SEND_INTERVAL_PERCENT = 20
 
 
 class CameraError(Exception):
@@ -390,7 +390,13 @@ class Camera:
         return data
 
     # ---------- 扬声器 / 对讲 ----------
-    def speak_file(self, g711a_path, sample_rate=8000, audio_bit=8, codec="mulaw"):
+    def speak_file(self, g711a_path, sample_rate=16000, audio_bit=8, codec="mulaw"):
+        """把裸音频文件推给设备扬声器播放.
+
+        sample_rate 必须和文件内容一致: 本设备(IMOU LC-S2V)按 **16kHz** 消费音频,
+        喂 8kHz 内容会被它当 16kHz 播 -> 实际只有一半数据量 -> 播放卡顿/断句。
+        codec: 只有 mulaw(G.711u) 出声; alaw 在本设备上是静音。
+        """
         if self.loginID == 0:
             raise CameraError("未登录")
 
@@ -438,7 +444,7 @@ class Camera:
                 raise CameraError(f"发送语音失败: {self.sdk.GetLastErrorMessage()}")
 
             size = os.path.getsize(g711a_path)
-            duration = size / sample_rate  # G711 1字节=1采样, 8kHz -> 每秒8000字节
+            duration = size / sample_rate  # G.711: 1 字节 = 1 采样
 
             # 1) 等异步发送真发完(超时兜底), 提前 Stop 会把话截断
             deadline = t0 + duration * 3 + 10

@@ -32,7 +32,7 @@ def _noop_audio_cb(lTalkHandle, pDataBuf, dwBufSize, byAudioEncodeType, dwUser):
     pass
 
 
-def play_once(cam, path, codec, interval, sample_rate=8000, audio_bit=8, tail=2.0):
+def play_once(cam, path, codec, interval, sample_rate=8000, audio_bit=8, tail=2.0, need_head=1):
     """播放一次, 返回测量结果 dict"""
     size = os.path.getsize(path)
     need = size / (sample_rate * (audio_bit / 8))  # 实时播放所需秒数
@@ -55,7 +55,7 @@ def play_once(cam, path, codec, interval, sample_rate=8000, audio_bit=8, tail=2.
     talk_in.pFilePath = ctypes.cast(
         ctypes.c_char_p(path.encode()), ctypes.POINTER(ctypes.c_char)
     )
-    talk_in.bNeedHead = 1
+    talk_in.bNeedHead = need_head
     talk_in.emEncodeType = encode
     talk_in.nAudioBit = audio_bit
     talk_in.dwSampleRate = sample_rate
@@ -74,6 +74,7 @@ def play_once(cam, path, codec, interval, sample_rate=8000, audio_bit=8, tail=2.
         raise RuntimeError(f"StartTalkEx 失败: {cam.sdk.GetLastErrorMessage()}")
 
     result = {"file": os.path.basename(path), "codec": codec, "interval": interval,
+              "rate": sample_rate, "bit": audio_bit, "head": need_head,
               "bytes": size, "need_seconds": round(need, 2)}
     try:
         t_start = time.time()
@@ -127,6 +128,8 @@ def main():
     ap.add_argument("--interval", type=int, default=60, help="dwSendInterval 百分比")
     ap.add_argument("--sweep", action="store_true", help="扫 100/60/20 三档")
     ap.add_argument("--tail", type=float, default=2.0, help="播完后再等几秒")
+    ap.add_argument("--rate", type=int, default=8000, help="声明采样率(8k/16k), 必须和音频内容一致")
+    ap.add_argument("--needhead", type=int, default=1, choices=[0, 1], help="bNeedHead: 1=SDK加音频头")
     args = ap.parse_args()
 
     c = _resolve(args.ip)
@@ -135,21 +138,23 @@ def main():
     print(f"已登录 {c['ip']}", flush=True)
 
     size = os.path.getsize(args.file)
-    realtime = size / 8000.0
-    print(f"文件 {args.file}: {size} 字节 -> 8kHz G.711 实时时长 {realtime:.2f}s "
-          f"(低于 8000 字节/秒 = 设备饿死 = 卡顿)\n", flush=True)
+    realtime = size / float(args.rate)
+    print(f"文件 {args.file}: {size} 字节 -> 声明 {args.rate}Hz G.711 实时时长 {realtime:.2f}s "
+          f"(低于 {args.rate} 字节/秒 = 设备饿死 = 卡顿)\n", flush=True)
 
     intervals = [100, 60, 20] if args.sweep else [args.interval]
     try:
         for iv in intervals:
             print(f"--- dwSendInterval={iv} ({'SDK默认' if iv in (0, 100) else str(iv)+'%'}) ---", flush=True)
-            r = play_once(cam, args.file, args.codec, iv, tail=args.tail)
+            r = play_once(cam, args.file, args.codec, iv, sample_rate=args.rate,
+                          tail=args.tail, need_head=args.needhead)
             for k in ("call_ok", "block_seconds", "send_seconds", "send_bytes_per_s",
                       "send_ok", "callbacks", "total_seconds"):
                 print(f"    {k:20} {r.get(k)}", flush=True)
             rate = r.get("send_bytes_per_s")
             if rate:
-                verdict = "达标" if rate >= 8000 else f"偏慢({rate/8000:.0%} 实时) -> 会卡顿"
+                target = args.rate   # G.711: 1 字节 = 1 采样
+                verdict = "达标" if rate >= target else f"偏慢({rate/target:.0%} 实时) -> 会卡顿"
                 print(f"    {'结论':20} {verdict}", flush=True)
             print(flush=True)
     finally:

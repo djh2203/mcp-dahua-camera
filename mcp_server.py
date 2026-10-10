@@ -277,16 +277,17 @@ def t_record_audio(args):
 
 
 def t_play_audio(args):
-    """把音频文件通过摄像头扬声器播放. path: wav/mp3 等音频文件路径; codec 默认 mulaw"""
+    """把音频文件通过摄像头扬声器播放. path: 绝对路径; codec 默认 mulaw; sample_rate 默认 16000"""
     path = args.get("path", "")
     codec = args.get("codec", "mulaw")
+    sample_rate = int(args.get("sample_rate", 16000))
     if not path:
         return _fail("缺少 path")
     if not os.path.exists(path):
         return _fail(f"文件不存在: {path}")
     try:
-        _get_cam().speak_file(path, codec=codec)
-        return _ok(path=path, message="已播放")
+        _get_cam().speak_file(path, sample_rate=sample_rate, codec=codec)
+        return _ok(path=path, sample_rate=sample_rate, message="已播放")
     except CameraError as e:
         return _fail(e)
 
@@ -397,12 +398,13 @@ TOOLS = [
     ),
     Tool(
         name="play_audio",
-        description="把音频文件通过摄像头扬声器播放。path: 音频文件路径(如 wav/mp3/g711 文件)",
+        description="把音频文件通过摄像头扬声器播放。path 需绝对路径; codec 默认 mulaw(本设备 alaw 无声); sample_rate 默认 16000, 必须和文件内容一致",
         inputSchema={
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "音频文件路径"},
-                "codec": {"type": "string", "description": "音频编码, 默认 mulaw"},
+                "path": {"type": "string", "description": "音频文件绝对路径(G.711 裸音频)"},
+                "codec": {"type": "string", "enum": ["mulaw", "alaw"], "description": "音频编码, 默认 mulaw"},
+                "sample_rate": {"type": "integer", "description": "采样率, 默认 16000(设备按 16kHz 消费, 8kHz 内容会卡顿)"},
             },
             "required": ["path"],
         },

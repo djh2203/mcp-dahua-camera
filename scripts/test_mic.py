@@ -24,6 +24,10 @@ print("logged in", flush=True)
 received = [0]
 total = [0]
 
+SECONDS = int(sys.argv[1]) if len(sys.argv) > 1 else 8
+t_start = [0.0]
+per_second = [0] * (SECONDS + 2)   # 每秒收到的字节, 用来看"出声那一下有没有打上去"
+
 @TALK_CB
 def audio_cb(lTalkHandle, pInfo, emAudioCode, dwUser):
     if not pInfo:
@@ -32,6 +36,9 @@ def audio_cb(lTalkHandle, pInfo, emAudioCode, dwUser):
     n = info.dwRawBufSize
     received[0] += 1
     total[0] += n
+    i = int(time.time() - t_start[0])
+    if 0 <= i < len(per_second):
+        per_second[i] += n
     if received[0] <= 3:
         print(
             f"  回调#{received[0]}: code={emAudioCode} rate={info.dwSampleRate} "
@@ -55,11 +62,16 @@ if not handle:
     cam.cleanup()
     sys.exit(1)
 
-print("监听 8 秒, 请对摄像头说话/拍手...", flush=True)
-time.sleep(8)
+print(f"监听 {SECONDS} 秒, 请对摄像头大声说话/拍手(每秒字节数会打出来)...", flush=True)
+t_start[0] = time.time()
+time.sleep(SECONDS)
 
 cam.sdk.StopTalkEx(handle)
 print(f"\n收到 {received[0]} 次回调, 共 {total[0]} 字节裸音频", flush=True)
+print("每秒字节数 (16kHz/16bit 实时=32000 B/s):", flush=True)
+for i, n in enumerate(per_second[:SECONDS]):
+    bar = "#" * min(60, n // 400)
+    print(f"  {i+1:2d}s {n:7d}  {bar}", flush=True)
 if total[0] > 0:
     print("结论: 设备麦克风可采集!", flush=True)
 else:

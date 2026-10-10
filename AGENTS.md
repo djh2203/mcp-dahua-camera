@@ -30,8 +30,11 @@ uv run python scripts/diag_talk.py --file <g711> --sweep   # 扬声器播放节�
 ## 设备/协议坑(重要)
 
 - 摄像头麦克风**静音时也持续回传小数据块**,无法用"数据有无/能量"判断说话结束,`record_audio` 只能按固定时长(`time.sleep(seconds)`)采集(见 `camera.py` record_audio)。安静房间里上行被**静音抑制/VAD 门控**,3 秒只回传约 0.2-0.3 秒有效音频属正常;检测麦克风是否真通,用 `scripts/test_mic.py` 对着设备出声测。
-- **扬声器播放卡顿的根因**:`NET_IN_TALK_SEND_DATA_FILE.dwSendInterval` 是"默认发送间隔的**百分比**"(0/100=SDK 默认, <100 更快, >100 更慢),**不是毫秒**。实测本设备默认(=100)只有 4238 B/s,而 8kHz G.711 实时播放需要 8000 B/s,喂不饱设备就会断句/卡顿;历史上代码传的 60 也只有 7094 B/s(89%),照样卡。现在 `camera.py` 用 `_SEND_INTERVAL_PERCENT = 30`(实测 ~1.75 倍实时)。换设备/换采样率后重测:
-  `uv run python scripts/diag_talk.py --file <g711裸音频> --sweep`
+- **扬声器播放卡顿有两个根因**(都实测过, 用 `scripts/diag_talk.py` 复查):
+  1. **采样率是第一根因**: 本设备按 **16kHz** 消费音频。喂 8kHz 内容 = 只有一半数据量, 设备持续饿死 → 断句/卡顿, 而且**怎么调发送速率都没用**(实测 8kHz 时 89% 和 175% 实时都还卡)。`speak_file` 默认 `sample_rate=16000`, 调用方必须按内容如实声明(cam-agent 的 TTS 已改产出 16kHz)。判别方法: 同一段语音分别按 8k/16k 声明播一遍, 正常语速且流畅的那个才是对的。
+  2. **发送间隔**: `NET_IN_TALK_SEND_DATA_FILE.dwSendInterval` 是"默认发送间隔的**百分比**"(0/100=SDK 默认, <100 更快, >100 更慢), **不是毫秒**。实测默认(=100)只有 4238 B/s, 而 16kHz G.711 实时播放需要 16000 B/s; 原代码传的 60 只有 7094 B/s。现用 `_SEND_INTERVAL_PERCENT = 20`(实测 ~2.7 倍实时)。
+  重测命令: `uv run python scripts/diag_talk.py --file <16k g711> --rate 16000 --sweep`
+- 编码与音频头: 本设备**只有 `mulaw`(G.711u)+ `bNeedHead=1` 出声**; 实测 `alaw` 和不加音频头都是**静音**。
 - `TalkSendDataByFile` 是**异步**的:必须靠 `cbSendPos` 回调判断真的发完,提前 `StopTalkSendDataByFile` 会把话截断。`speak_file` 现在等回调报满,再补上剩余播放时长才停。
 - 对讲通道被占用报 `talk has opened by other client` 时会重试,最长 120 秒后报错。其中"是否重启摄像头"的 `input()` 只在**终端**(`sys.stdin.isatty()`)才弹——MCP stdio 下 stdin 是协议管道,弹了会挂起并污染协议,所以被挡掉了。想重启设备:先 `StopTalkEx` 释放通道,或人工调用 `Camera.reboot()`(`RebootDev` 报 `Protocol error` 属正常,设备实际已重启)。
 - `play_audio` 的 `path` 必须是**绝对路径**:MCP server 的 cwd 是本仓库,客户端进程的 cwd 可能是 cam-agent,相对路径会找不到文件。
@@ -42,7 +45,7 @@ uv run python scripts/diag_talk.py --file <g711> --sweep   # 扬声器播放节�
 
 设备管理:`search_devices`, `select_camera`, `list_cameras`
 
-设备控制:`camera_status`, `camera_info`(型号/版本/预置点/智能跟踪), `ptz_move`(up/down/left/right/对角, speed 1-255, seconds 0.2-10), `ptz_stop`, `ptz_abs_move`(pan_deg 0=正面/90=左/180=背/270=右, tilt 被忽略), `ptz_get_position`, `preset`(set/goto/del), `capture`, `record_audio`(seconds 1-30), `play_audio`(path + codec 默认 mulaw)
+设备控制:`camera_status`, `camera_info`(型号/版本/预置点/智能跟踪), `ptz_move`(up/down/left/right/对角, speed 1-255, seconds 0.2-10), `ptz_stop`, `ptz_abs_move`(pan_deg 0=正面/90=左/180=背/270=右, tilt 被忽略), `ptz_get_position`, `preset`(set/goto/del), `capture`, `record_audio`(seconds 1-30), `play_audio`(绝对 path + codec 默认 mulaw + sample_rate 默认 16000)
 
 ## 凭据本地保存
 
