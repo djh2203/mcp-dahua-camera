@@ -38,12 +38,11 @@ uv run python scripts/query_caps.py      # 查设备能力(PTZ/智能动检/扬�
 - **剩下的卡顿不是我们能修的**: 同一配置连播 5 遍实测 **1 遍略卡 / 3 遍很卡 / 1 遍很顺**, 而 5 遍的发送节奏逐 0.5 秒完全一致(21.8 KB/s ≈ 1.36 倍实时); 甚至播放期间让云台不停转动, 发送节奏也一模一样(`--move` 对照)。结论: **数据是均匀送到的, 是设备自己在视频/跟踪负载下播放抖动**, 与摄像头转动、画面变化强相关。判据脚本:
   `uv run python scripts/diag_talk.py --file <16k g711> --rate 16000 --interval 40`(看"发送节奏")+ 加 `--move` 复现"一动就断音"。听懂感必须**多测几遍**(单遍结论会被随机性骗)。
 - 试过但此型号不支持的"根治"方向: `speak.getCaps` 查询失败(设备不支持扬声器音频文件播放能力), 所以**没法把音频传进设备让它自己播**; `CLIENT_IpSpeaker*`/`TalkChannel`/上传接口在 Python 绑定里也都没有, 硬要用得盲猜 ctypes 结构体, 风险太高。
-- **"摄像机动不停"与音频卡顿的关系(已客观测量)**: `scripts/check_motion.py` 用"连续两帧 PSNR"判断在不在动(>30dB 静止, <20dB 正在转)。实测这台 IMOU 有 **50%~69% 的时间在动**, 与播放卡顿强相关; 用户在 IMOU app 里对讲时 app 会把它停住, 所以 app 里对讲很流畅。
-- **播报时暂停"智能跟踪"(已实现, `PAUSE_TRACK_WHILE_SPEAKING`)**: app 里的两个开关对应两个配置 —— **"画面变化"=`MotionDetect`**(开着不影响音频)、**"智能跟踪"=`SmartMotionDetect.Enable`**(就是它让云台追人、让播报断句)。`speak_file` 现在播报前把它写 False + 发 `STOP_MOVE`(=139, 停移动+停巡航, 结构体 `NET_IN_STOP_MOVE_INFO` 在 Python 里有, 且这版 `PTZControlEx2` 支持 `param4` 结构指针), 播完按读到的原值恢复。副作用:播报那几秒不追踪(app 对讲时也是这个行为, 用户认可)。不想用就把常量设 False。
-- **配置读写的坑**: `SetNewDevConfig("SmartMotionDetect", json)` 写入**会真的改变运行行为**(写完几秒后云台开始追人), 但 `GetNewDevConfig` 回读**永远反映 app/云里的设置, 不反映运行时** —— 所以"是否暂停"不能靠回读判断, 要一律先写 False、再按回读值恢复。写 payload 用整份读到的 JSON(含 id/session)或只发 `{"params": ...}` 都能被接受。
-- **`User parameter is illegal` 是正常的**: 无进行中的移动时调 `ptz_stop`(八向停止)会返回参数非法, `camera.py` 本来就容忍它 —— 那句 print 来自 SDK 包装层, 不是故障。改用 `STOP_MOVE` 优先后就不再出现。
-- 测量噪声警告: 智能跟踪**只在画面里出现可跟踪目标时才动**, 所以"在不在动"的单次采样毫无意义(实测同一状态出现过 50% / 69% / 38% / 0%)。判定必须多轮 + 同时确认当时有目标。
-- 未验证的下一步(按性价比): ①在 app 里关掉智能追踪后重跑 5 遍听感测试(应该是根治); ②试更省设备资源的编码(`EM_A_TALK_CODING_TYPE` 里还有 AMR/G726/AAC/G722.1, 设备是否支持未知)。
+- **"智能跟踪"在 SDK 侧关不掉(实测, 别再走这条路)**: app 里"画面变化"= `MotionDetect`(开着不影响音频), "智能跟踪" = `SmartMotionDetect.Enable`。但 **SDK 写这个配置在这台设备上不生效**: `SetNewDevConfig` 返回成功、`GetNewDevConfig` 回读不变、**云台行为也不变** —— 判据是让用户站在镜头前乱动, 云台一动不动。曾经据此实现过"播报时暂停跟踪", 已删除(它每句话还白等 0.8 秒)。跟踪由 IMOU app/云驱动, app 对讲时能暂停它是因为那是 app/云自己的行为, 不是设备固件能力。
+- **实测的因果关系(以 app 开关为准的 A/B)**: app 里跟踪**关** → 20 秒采样 **0%** 在动、5 遍播报**全顺**; 跟踪**开** → **50%~69%** 在动、5 遍里 3 遍很卡。跟踪**只在画面里出现可跟踪目标时才动**, 所以单次"在不在动"采样毫无意义(同一状态出现过 50% / 69% / 38% / 0%), 判定必须多轮且确认当时有目标 —— 用 `scripts/check_motion.py`(连续两帧 PSNR: >30dB 静止 / <20dB 正在转)。
+- `speak_file` 播报前会发一次 `STOP_MOVE`(=139, 停移动+停巡航; 结构体 `NET_IN_STOP_MOVE_INFO` 在 Python 里有, 这版 `PTZControlEx2` 支持 `param4` 结构指针)。它只能停住**当下**的转动, 拦不住 app 的跟踪。
+- **`User parameter is illegal` 是正常的**: 无进行中的移动时调 `ptz_stop`(八向停止)就返回参数非法, `camera.py` 本来就容忍 —— 那句 print 来自 SDK 包装层, 不是故障。
+- 剩下的(若要"跟踪+实时对讲"兼得): 只能试更省设备资源的编码(`EM_A_TALK_CODING_TYPE` 里还有 AMR/G726/AAC/G722.1, 设备是否支持未知, 只能用听感验证)。app 的跟踪开着时, 音频卡顿是设备侧资源竞争, 本仓库这侧已经调到极限。
 - 编码与音频头: 本设备**只有 `mulaw`(G.711u)+ `bNeedHead=1` 出声**; 实测 `alaw` 和不加音频头都是**静音**。
 - `TalkSendDataByFile` 是**异步**的:必须靠 `cbSendPos` 回调判断真的发完,提前 `StopTalkSendDataByFile` 会把话截断。`speak_file` 现在等回调报满,再补上剩余播放时长才停。
 - 对讲通道被占用报 `talk has opened by other client` 时会重试,最长 120 秒后报错。其中"是否重启摄像头"的 `input()` 只在**终端**(`sys.stdin.isatty()`)才弹——MCP stdio 下 stdin 是协议管道,弹了会挂起并污染协议,所以被挡掉了。想重启设备:先 `StopTalkEx` 释放通道,或人工调用 `Camera.reboot()`(`RebootDev` 报 `Protocol error` 属正常,设备实际已重启)。
