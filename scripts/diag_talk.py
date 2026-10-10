@@ -10,6 +10,7 @@
 """
 import argparse
 import ctypes
+import threading
 import os
 import sys
 import time
@@ -32,7 +33,44 @@ def _noop_audio_cb(lTalkHandle, pDataBuf, dwBufSize, byAudioEncodeType, dwUser):
     pass
 
 
-def play_once(cam, path, codec, interval, sample_rate=8000, audio_bit=8, tail=2.0, need_head=1):
+def _profile(marks, bucket=0.5):
+    """把发送进度回调换算成每 bucket 秒的吞吐(字节), 用来看卡在哪里。
+
+    实时播放需要 sample_rate 字节/秒; 某一段明显低于它 = 那一段设备没收到足够数据,
+    表现就是断句/丢字。对比"卡的遍"和"顺的遍", 就能分清是设备侧送不上去,
+    还是数据送到了但设备没播。
+    """
+    if not marks:
+        return []
+    rows = []
+    b = 0.0
+    prev = 0
+    t_end = marks[-1][0]
+    while b <= t_end + bucket:
+        sent = 0
+        for t, _total, s in marks:
+            if t <= b + bucket:
+                sent = s
+        rows.append((round(b, 1), sent - prev))
+        prev = sent
+        b += bucket
+    return rows
+
+
+def _ptz_storm(cam, stop_event):
+    """播放期间不停转云台, 复现"摄像头一动就断音"的场景"""
+    while not stop_event.is_set():
+        for action in ("right", "left"):
+            if stop_event.is_set():
+                return
+            try:
+                cam.ptz_move(action, speed=6, seconds=1.2)
+            except Exception:
+                return
+
+
+def play_once(cam, path, codec, interval, sample_rate=8000, audio_bit=8, tail=2.0, need_head=1,
+              move=False):
     """播放一次, 返回测量结果 dict"""
     size = os.path.getsize(path)
     need = size / (sample_rate * (audio_bit / 8))  # 实时播放所需秒数
@@ -73,7 +111,14 @@ def play_once(cam, path, codec, interval, sample_rate=8000, audio_bit=8, tail=2.
     if not handle:
         raise RuntimeError(f"StartTalkEx 失败: {cam.sdk.GetLastErrorMessage()}")
 
+    stop_move = threading.Event()
+    mover = None
+    if move:
+        mover = threading.Thread(target=_ptz_storm, args=(cam, stop_move), daemon=True)
+        mover.start()
+
     result = {"file": os.path.basename(path), "codec": codec, "interval": interval,
+              "moving": move,
               "rate": sample_rate, "bit": audio_bit, "head": need_head,
               "bytes": size, "need_seconds": round(need, 2)}
     try:
@@ -106,9 +151,13 @@ def play_once(cam, path, codec, interval, sample_rate=8000, audio_bit=8, tail=2.
         wait = max(0.0, need - sent_t) + tail
         time.sleep(wait)
         result["total_seconds"] = round(time.time() - t0, 2)
+        result["profile"] = _profile(marks)
     finally:
         cam.sdk.StopTalkSendDataByFile(handle)
         cam.sdk.StopTalkEx(handle)
+        stop_move.set()
+        if mover:
+            mover.join(timeout=8)
     return result
 
 
@@ -130,6 +179,7 @@ def main():
     ap.add_argument("--tail", type=float, default=2.0, help="播完后再等几秒")
     ap.add_argument("--rate", type=int, default=8000, help="声明采样率(8k/16k), 必须和音频内容一致")
     ap.add_argument("--needhead", type=int, default=1, choices=[0, 1], help="bNeedHead: 1=SDK加音频头")
+    ap.add_argument("--move", action="store_true", help="播放期间不停转云台, 复现\"一动就断音\"")
     args = ap.parse_args()
 
     c = _resolve(args.ip)
@@ -145,12 +195,20 @@ def main():
     intervals = [100, 60, 20] if args.sweep else [args.interval]
     try:
         for iv in intervals:
-            print(f"--- dwSendInterval={iv} ({'SDK默认' if iv in (0, 100) else str(iv)+'%'}) ---", flush=True)
+            tag = "SDK默认" if iv in (0, 100) else f"{iv}%"
+            print(f"--- dwSendInterval={iv} ({tag}){' [云台同时转动]' if args.move else ''} ---", flush=True)
             r = play_once(cam, args.file, args.codec, iv, sample_rate=args.rate,
-                          tail=args.tail, need_head=args.needhead)
+                          tail=args.tail, need_head=args.needhead, move=args.move)
             for k in ("call_ok", "block_seconds", "send_seconds", "send_bytes_per_s",
                       "send_ok", "callbacks", "total_seconds"):
                 print(f"    {k:20} {r.get(k)}", flush=True)
+            prof = r.get("profile") or []
+            if prof:
+                need_half = args.rate * 0.5
+                print(f"    发送节奏(每 0.5s 字节数, 16kHz 实时需 {int(need_half)}):", flush=True)
+                for t, n in prof:
+                    flag = "   <-- 没送上去" if n < need_half * 0.9 else ""
+                    print(f"      {t:5.1f}s {n:7d}{flag}", flush=True)
             rate = r.get("send_bytes_per_s")
             if rate:
                 target = args.rate   # G.711: 1 字节 = 1 采样

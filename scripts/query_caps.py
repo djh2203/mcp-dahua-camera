@@ -92,4 +92,38 @@ try:
 except Exception as e:
     print(f"  查询智能动检异常: {e}")
 
+print("\n===== 扬声器能力(speak.getCaps) =====")
+# 关键看 bSupportUpload: 支持的话就能把音频文件塞进设备让它自己播,
+# 绕开实时对讲通道的抖动(播放卡顿的根治方案)。
+try:
+    from NetSDK.SDK_Struct import CFG_CAP_SPEAK
+    from NetSDK.SDK_Enum import EM_TALK_AUDIO_TYPE
+
+    caps = CFG_CAP_SPEAK()
+    buf = ctypes.create_string_buffer(ctypes.sizeof(caps))
+    err = ctypes.c_int(0)
+    ret = cam.sdk.sdk.CLIENT_QueryNewSystemInfo(
+        ctypes.c_void_p(cam.loginID), ctypes.c_char_p(b"speak.getCaps"), cam.channel,
+        buf, ctypes.sizeof(caps), ctypes.byref(err), 3000,
+    )
+    if ret:
+        ctypes.memmove(ctypes.addressof(caps), buf, ctypes.sizeof(caps))
+        fmt_names = {v: k for k, v in vars(EM_TALK_AUDIO_TYPE).items() if isinstance(v, int)}
+        print(f"  支持音频格式数: {caps.nAudioCapNum}")
+        for i in range(min(caps.nAudioCapNum, 16)):
+            f = caps.stuAudioCap[i]
+            name = fmt_names.get(getattr(f, "emCompression", -1), f"未知({f.emCompression})")
+            print(f"    - {name}  属性数={f.nPropertyNum}")
+        print(f"  音频播放路径数: {caps.nAudioPlayPathNum}")
+        for i in range(min(caps.nAudioPlayPathNum, 8)):
+            p = caps.stuAudioPlayPath[i]
+            print(f"    - 路径={p.szPath.decode(errors='ignore')} 支持上传={'✓' if p.bSupportUpload else '✗'}"
+                  f" 最大个数={p.nMaxFileUploadNum} 最大大小={p.nMaxUploadFileSize} 字节")
+        print(f"  时间预案播报: {'✓' if caps.stuVoicePlayPlan.bSupport else '✗'} (任务数={caps.stuVoicePlayPlan.nVoiceTaskNum})")
+        print(f"  支持警笛: {'✓' if caps.bSupportSiren else '✗'}")
+    else:
+        print(f"  查询扬声器能力失败(设备可能不支持), err={err.value}")
+except Exception as e:
+    print(f"  查询扬声器能力异常: {e}")
+
 cam.cleanup()
