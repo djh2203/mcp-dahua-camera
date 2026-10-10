@@ -51,6 +51,12 @@ PTZ_ACTION_MAP = {
 # 对角命令需要 param1/param2 都是速度
 _DIAGONAL = {"leftup", "leftdown", "rightup", "rightdown"}
 
+# 对讲发送间隔, 单位是"默认间隔的百分比"(0/100=SDK默认, <100 更快), 不是毫秒!
+# 实测本设备(SDK 默认=100)只有 4238 B/s, 而 8kHz G.711 实时播放需要 8000 B/s
+# -> 设备喂不饱, 播放卡顿/断句. 30 实测 ~1.75 倍实时, 留够余量又不撑爆设备缓冲.
+# 换设备/换采样率要重测: uv run python scripts/diag_talk.py --file <g711> --sweep
+_SEND_INTERVAL_PERCENT = 30
+
 
 class CameraError(Exception):
     pass
@@ -58,11 +64,6 @@ class CameraError(Exception):
 
 def _noop_audio_cb(lTalkHandle, pDataBuf, dwBufSize, byAudioEncodeType, dwUser):
     """对讲数据回调(用文件下发时不需要处理)"""
-    pass
-
-
-def _noop_sendpos_cb(lTalkHandle, dwTotalSize, dwSendSize, dwUser):
-    """音频文件发送进度回调"""
     pass
 
 
@@ -408,8 +409,16 @@ class Camera:
         talk_in.emEncodeType = encode_type
         talk_in.nAudioBit = audio_bit
         talk_in.dwSampleRate = sample_rate
-        talk_in.dwSendInterval = 60
-        self.cb_sendpos = fTalkSendPosCallBack(_noop_sendpos_cb)
+        talk_in.dwSendInterval = _SEND_INTERVAL_PERCENT
+        # 发送进度回调(TalkSendDataByFile 是异步的, 靠它判断真的发完了, 别用固定时长猜)
+        progress = {"total": 0, "sent": 0}
+
+        @fTalkSendPosCallBack
+        def _pos(lTalkHandle, dwTotalSize, dwSendSize, dwUser):
+            progress["total"] = dwTotalSize
+            progress["sent"] = dwSendSize
+
+        self.cb_sendpos = _pos
         talk_in.cbSendPos = self.cb_sendpos
         talk_in.dwUser = C_LDWORD(0)
 
@@ -424,14 +433,23 @@ class Camera:
             raise CameraError(f"开启对讲失败: {self.sdk.GetLastErrorMessage()}")
 
         try:
+            t0 = time.time()
             if not self.sdk.TalkSendDataByFile(handle, talk_in, talk_out):
                 raise CameraError(f"发送语音失败: {self.sdk.GetLastErrorMessage()}")
-            # 等待发送完成(以音频长度估算)
-            import os
 
             size = os.path.getsize(g711a_path)
             duration = size / sample_rate  # G711 1字节=1采样, 8kHz -> 每秒8000字节
-            time.sleep(duration + 1.0)
+
+            # 1) 等异步发送真发完(超时兜底), 提前 Stop 会把话截断
+            deadline = t0 + duration * 3 + 10
+            while progress["total"] == 0 or progress["sent"] < progress["total"]:
+                if time.time() > deadline:
+                    print(f"[摄像头] 语音发送未确认完成 ({progress})", flush=True)
+                    break
+                time.sleep(0.05)
+
+            # 2) 发送比实时快, 设备还在按实时播缓冲, 补上剩余时长再停
+            time.sleep(max(0.0, duration - (time.time() - t0)) + 1.0)
         finally:
             self.sdk.StopTalkSendDataByFile(handle)
             self.sdk.StopTalkEx(handle)

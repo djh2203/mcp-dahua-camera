@@ -3,7 +3,7 @@ import time
 import ctypes
 
 sys.path.insert(0, ".")
-from config import load_config
+from config import resolve_camera
 from camera import Camera
 from NetSDK.SDK_Struct import (
     NET_IN_START_TALK_INFO,
@@ -16,14 +16,8 @@ TALK_CB = ctypes.CFUNCTYPE(
     None, C_LLONG, ctypes.POINTER(NET_AUDIO_DATA_CB_INFO), C_ENUM, C_LDWORD
 )
 
-cfg = load_config()
-cam = Camera(
-    cfg["camera"]["ip"],
-    cfg["camera"]["port"],
-    cfg["camera"]["username"],
-    cfg["camera"]["password"],
-    cfg["camera"]["channel"],
-)
+_c = resolve_camera()
+cam = Camera(_c["ip"], _c["port"], _c["username"], _c["password"], _c["channel"])
 cam.login()
 print("logged in", flush=True)
 

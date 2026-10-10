@@ -90,13 +90,10 @@ class PtzTest:
 
 def main():
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from config import load_config
+    from config import resolve_camera
 
-    cfg = load_config()
-    ip = cfg["camera"]["ip"]
-    port = int(cfg["camera"]["port"])
-    user = cfg["camera"]["username"]
-    pwd = cfg["camera"]["password"]
+    c = resolve_camera()
+    ip, port, user, pwd = c["ip"], c["port"], c["username"], c["password"]
 
     t = PtzTest(ip, port, user, pwd)
     if not t.login():

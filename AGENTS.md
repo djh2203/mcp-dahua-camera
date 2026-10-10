@@ -9,6 +9,7 @@ uv run python -m mcp_server     # 启动 MCP server (stdio 协议) — 唯一入
 uv run python scripts/test_ptz.py        # 云台测试
 uv run python scripts/search_devices.py  # 局域网搜设备
 uv run python scripts/test_mic.py        # 麦克风测试
+uv run python scripts/diag_talk.py --file <g711> --sweep   # 扬声器播放节奏诊断(卡顿排查)
 ```
 
 - `pyproject.toml` 是 `package = false`,**没有 console script**,只能用 `python -m mcp_server` 启动;且必须在**仓库目录下**跑(`-m` 靠 cwd 找模块)。从别处启动用 `uv run --directory <本仓库> python -m mcp_server`——`--project` 只切依赖不切 cwd,配错会报 `No module named mcp_server`。
@@ -21,16 +22,21 @@ uv run python scripts/test_mic.py        # 麦克风测试
 
 ## 配置
 
-- `config.ini`([camera] ip/port/username/password/channel),作为**没在 `cameras.json` 里记录过的新设备**的默认凭据。
+- `config.ini`([camera] port/username/password/channel,ip 可选)= **没在 `cameras.json` 里记录过的新设备**的默认凭据,也是脚本没指定 IP 时的兜底。
 - 环境变量可覆盖:`CAM_IP` / `CAM_PORT` / `CAM_USER` / `CAM_PASS` / `CAM_CHANNEL`。
-- 当前 `config.ini` 指向 IMOU 摄像头 `192.168.10.56`(16kHz 麦克风);改 `config.ini` 即切换默认摄像头。
+- 设备解析统一走 `config.resolve_camera(ip=None)`:cameras.json 已保存的凭据优先 → config.ini 默认值 → 都没有就报错(**不猜地址**)。`mcp_server.py` 和各 `scripts/*.py` 都用它,别再各写一份。
+- 当前 `cameras.json` 里是 IMOU `192.168.10.56`(16kHz 麦克风);`scripts/*.py` 不带参数时用它。
 
 ## 设备/协议坑(重要)
 
-- 摄像头麦克风**静音时也持续回传小数据块**,无法用"数据有无/能量"判断说话结束,`record_audio` 只能按固定时长(`time.sleep(seconds)`)采集(见 `camera.py` record_audio)。
+- 摄像头麦克风**静音时也持续回传小数据块**,无法用"数据有无/能量"判断说话结束,`record_audio` 只能按固定时长(`time.sleep(seconds)`)采集(见 `camera.py` record_audio)。安静房间里上行被**静音抑制/VAD 门控**,3 秒只回传约 0.2-0.3 秒有效音频属正常;检测麦克风是否真通,用 `scripts/test_mic.py` 对着设备出声测。
+- **扬声器播放卡顿的根因**:`NET_IN_TALK_SEND_DATA_FILE.dwSendInterval` 是"默认发送间隔的**百分比**"(0/100=SDK 默认, <100 更快, >100 更慢),**不是毫秒**。实测本设备默认(=100)只有 4238 B/s,而 8kHz G.711 实时播放需要 8000 B/s,喂不饱设备就会断句/卡顿;历史上代码传的 60 也只有 7094 B/s(89%),照样卡。现在 `camera.py` 用 `_SEND_INTERVAL_PERCENT = 30`(实测 ~1.75 倍实时)。换设备/换采样率后重测:
+  `uv run python scripts/diag_talk.py --file <g711裸音频> --sweep`
+- `TalkSendDataByFile` 是**异步**的:必须靠 `cbSendPos` 回调判断真的发完,提前 `StopTalkSendDataByFile` 会把话截断。`speak_file` 现在等回调报满,再补上剩余播放时长才停。
 - 对讲通道被占用报 `talk has opened by other client` 时会重试,最长 120 秒后报错。其中"是否重启摄像头"的 `input()` 只在**终端**(`sys.stdin.isatty()`)才弹——MCP stdio 下 stdin 是协议管道,弹了会挂起并污染协议,所以被挡掉了。想重启设备:先 `StopTalkEx` 释放通道,或人工调用 `Camera.reboot()`(`RebootDev` 报 `Protocol error` 属正常,设备实际已重启)。
+- `play_audio` 的 `path` 必须是**绝对路径**:MCP server 的 cwd 是本仓库,客户端进程的 cwd 可能是 cam-agent,相对路径会找不到文件。
 - 抓图/录音返回**文件路径**而非二进制:Agent 端拿路径自己做识别。产物在 `media/`(gitignored)。
-- 部分能力不同设备差异大(采样率、云台精度、get_position 返回值不可靠),改代码要拿真机验证。
+- 部分能力不同设备差异大(采样率、云台精度、`ptz_get_position` 在本 IMOU 上报 `There is no such error code`),改代码要拿真机验证。
 
 ## 工具清单(13 个)
 
@@ -40,4 +46,4 @@ uv run python scripts/test_mic.py        # 麦克风测试
 
 ## 凭据本地保存
 
-`select_camera` 成功连接后,凭据自动保存到 `cameras.json`(JSON,gitignored)。再次 `select_camera` 时只需传 `ip`。该文件由 `mcp_server.py` 读写,删掉不影响运行(会退回用 `config.ini` 的默认凭据)。
+`select_camera` 成功连接后,凭据自动保存到 `cameras.json`(JSON,gitignored)。再次 `select_camera` 时只需传 `ip`。该文件由 `config.py` 读写(`load_credentials`/`save_credential`),删掉不影响运行(会退回用 `config.ini` 的默认凭据)。

@@ -1,8 +1,12 @@
 # coding=utf-8
 import configparser
+import json
 import os
 import sys
 from pathlib import Path
+
+# 已连接设备的凭据(select_camera 成功后自动写入, gitignored)
+CREDENTIALS_FILE = Path(__file__).parent / "cameras.json"
 
 DEFAULT_CONFIG = {
     "camera": {
@@ -55,3 +59,49 @@ def load_config(path=None):
                 cfg.set(section, key, val)
 
     return cfg
+
+
+def load_credentials():
+    """cameras.json 里的每台设备凭据 {ip: {port,username,password,channel,model}}"""
+    try:
+        with open(CREDENTIALS_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_credential(ip, port, username, password, channel, model=""):
+    creds = load_credentials()
+    creds[ip] = {
+        "port": port,
+        "username": username,
+        "password": password,
+        "channel": channel,
+        "model": model,
+    }
+    with open(CREDENTIALS_FILE, "w") as f:
+        json.dump(creds, f, ensure_ascii=False, indent=2)
+
+
+def resolve_camera(ip=None):
+    """解析要操作的摄像头: cameras.json 已保存的凭据优先, 其次 config.ini 的默认值.
+
+    不传 ip 时取 cameras.json 里第一台; 两边都没 ip 就报错, 不去猜一个地址。
+    返回 dict(ip/port/username/password/channel)。
+    """
+    cfg = load_config()
+    creds = load_credentials()
+    ip = ip or next(iter(creds), None) or cfg["camera"].get("ip")
+    if not ip:
+        raise ValueError(
+            "未指定摄像头 IP: 传入 ip, 或先在 mcp_server 里 select_camera 一次, "
+            "或在 config.ini 的 [camera] 填 ip"
+        )
+    c = creds.get(ip, {})
+    return {
+        "ip": ip,
+        "port": int(c.get("port", cfg["camera"]["port"])),
+        "username": c.get("username", cfg["camera"]["username"]),
+        "password": c.get("password", cfg["camera"]["password"]),
+        "channel": int(c.get("channel", cfg["camera"]["channel"])),
+    }

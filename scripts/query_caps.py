@@ -6,13 +6,13 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import load_config
+from config import resolve_camera
 from camera import Camera
 from NetSDK.SDK_Enum import CFG_CAP_CMD_TYPE
 from NetSDK.SDK_Struct import CFG_PTZ_PROTOCOL_CAPS_INFO
 
-cfg = load_config()
-cam = Camera(cfg["camera"]["ip"], cfg["camera"]["port"], cfg["camera"]["username"], cfg["camera"]["password"], cfg["camera"]["channel"])
+_c = resolve_camera()
+cam = Camera(_c["ip"], _c["port"], _c["username"], _c["password"], _c["channel"])
 cam.login()
 
 print("===== PTZ 云台能力集 =====")
